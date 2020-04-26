@@ -1,3 +1,19 @@
+**DISCLAIMER:**
+ 
+This project is a fork of https://github.com/gbbirkisson/kong-plugin-jwt-keycloak that has been improved with functionality for working with [kong-oidc](https://github.com/PSheshenya/kong-oidc) plugin.
+
+The **kong-oidc** plugin adds an additional ```X-Userinfo```, ```X-Access-Token``` and ```X-Id-Token``` headers to the upstream request, which can be consumed in jwt-keycloak plugin. 
+All of them are base64 encoded.
+
+As discussed in https://github.com/gbbirkisson/kong-plugin-jwt-keycloak/issues/7#issuecomment-616071079, I faced a problem when was trying decode data from ```cookie_session```.
+
+In current version I have added ```conf.internal_request_headers``` where we can set a list of headers (e.g. ```X-Id-Token```). Then these headers will be checked for the presence of token.
+
+Also we can specify ```confredirect_after_authentication_failed_uri``` to redirect to the page insted of kong.response.exit. 
+
+---
+
+
 <h1>Kong plugin jwt-keycloak</h1>
 
 A plugin for the [Kong Microservice API Gateway](https://konghq.com/solutions/gateway/) to validate access tokens issued by [Keycloak](https://www.keycloak.org/). It uses the [Well-Known Uniform Resource Identifiers](https://tools.ietf.org/html/rfc5785) provided by [Keycloak](https://www.keycloak.org/) to load [JWK](https://tools.ietf.org/html/rfc7517) public keys from issuers that are specifically allowed for each endpoint.
