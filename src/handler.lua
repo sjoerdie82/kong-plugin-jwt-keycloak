@@ -21,7 +21,7 @@ else
 end
 kong.log.debug('JWT_KEYCLOAK_PRIORITY: ' .. priority)
 
-local CustomHandler = {
+local JwtKeycloakHandler = {
   VERSION  = "1.0.0",
   PRIORITY = 10,
 }
