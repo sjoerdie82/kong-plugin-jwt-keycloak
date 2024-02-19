@@ -163,10 +163,6 @@ local function retrieve_token(conf)
     end
 end
 
-function JwtKeycloakHandler:new()
-    JwtKeycloakHandler.super.new(self, "jwt-keycloak")
-end
-
 local function load_consumer(consumer_id, anonymous)
     local result, err = kong.db.consumers:select { id = consumer_id }
     if not result then
