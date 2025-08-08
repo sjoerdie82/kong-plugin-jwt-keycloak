@@ -249,37 +249,40 @@ end
 
 local function validate_signature(conf, jwt, second_call)
     kong.log.debug('Calling validate_signature()')
-    --     kong.log.debug('validate_signature() jwt: ' .. table_to_string(jwt))
-    local issuer_cache_key = 'issuer_keys_' .. jwt.claims.iss
-    local well_known_endpoint = keycloak_keys.get_wellknown_endpoint(conf.well_known_template, jwt.claims.iss)
-    -- Retrieve public keys
-    local public_keys, err = kong.cache:get(issuer_cache_key, nil, get_keys, well_known_endpoint, true)
 
-    if not public_keys then
-        if err then
-            kong.log.err(err)
-        end
-        return kong.response.exit(403, { message = "Unable to get public key for issuer" })
+    local opts = {
+        accept_none_alg = false,
+        accept_unsupported_alg = false,
+        token_signing_alg_values_expected = { conf.algorithm or "RS256" },
+        discovery = string.format(conf.well_known_template, jwt.claims.iss),
+        timeout = 10000,
+        ssl_verify = "no"
+    }
+
+    local discovery_doc, err = require("resty.openidc").get_discovery_doc(opts)
+    if err then
+        kong.log.err('Discovery document retrieval failed: ' .. err)
+        return kong.response.exit(403, { message = "Unable to get discovery document for issuer" })
     end
 
-    -- Verify signatures
-    for _, k in ipairs(public_keys.keys) do
-        if jwt:verify_signature(k) then
-            kong.log.debug('JWT signature verified')
-            return nil
-        end
+    local jwt_validators = require "resty.jwt-validators"
+    jwt_validators.set_system_leeway(120)
+    local claim_spec = {
+        iss = jwt_validators.equals(discovery_doc.issuer),
+        sub = jwt_validators.required(),
+        exp = jwt_validators.is_not_expired(),
+        iat = jwt_validators.required(),
+        nbf = jwt_validators.opt_is_not_before(),
+    }
+
+    local json, err, token = require("resty.openidc").bearer_jwt_verify(opts, claim_spec)
+    if err then
+        kong.log.err('Bearer JWT verify failed: ' .. err)
+        return kong.response.exit(401, { message = "Invalid token signature" })
     end
 
-    -- We could not validate signature, try to get a new keyset?
-    since_last_update = socket.gettime() - public_keys.updated_at
-    if not second_call and since_last_update > conf.iss_key_grace_period then
-        kong.log.debug('Could not validate signature. Keys updated last ' .. since_last_update .. ' seconds ago')
-        kong.cache:invalidate_local(issuer_cache_key)
-        return validate_signature(conf, jwt, true)
-    end
-
-    kong.log.err('Invalid token signature: ')
-    return kong.response.exit(401, { message = "Invalid token signature" })
+    kong.log.debug('JWT signature verified using resty.openidc')
+    return nil
 end
 
 local function match_consumer(conf, jwt)
