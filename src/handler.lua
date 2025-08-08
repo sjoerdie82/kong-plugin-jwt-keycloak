@@ -22,8 +22,8 @@ end
 kong.log.debug('JWT_KEYCLOAK_PRIORITY: ' .. priority)
 
 local JwtKeycloakHandler = {
-  VERSION  = "1.0.0",
-  PRIORITY = 10,
+  VERSION  = "1.1.0",
+  PRIORITY = priority,
 }
 
 function table_to_string(tbl)
@@ -52,7 +52,7 @@ function table_to_string(tbl)
 end
 
 local function retrieve_token_payload(internal_request_headers)
-    if internal_request_headers == nil or table.getn(internal_request_headers) == 0 then
+    if internal_request_headers == nil or #internal_request_headers == 0 then
         return nil
     end
     kong.log.info('Calling retrieve_token_payload(). Getting token_payload which had been saved by other Kong plugins')
@@ -240,7 +240,7 @@ local function get_keys(well_known_endpoint)
         decoded_keys[i] = jwt_decoder:base64_decode(key)
     end
 
-    kong.log.debug('Number of keys retrieved: ' .. table.getn(decoded_keys))
+    kong.log.debug('Number of keys retrieved: ' .. #decoded_keys)
     return {
         keys = decoded_keys,
         updated_at = socket.gettime(),
@@ -433,8 +433,6 @@ local function do_authentication(conf)
 end
 
 function JwtKeycloakHandler:access(conf)
-    JwtKeycloakHandler.super.access(self)
-
     kong.log.debug('Calling access()')
     -- check if preflight request and whether it should be authenticated
     if not conf.run_on_preflight and kong.request.get_method() == "OPTIONS" then

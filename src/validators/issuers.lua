@@ -1,5 +1,5 @@
 local function validate_issuer(allowed_issuers, jwt_claims)
-    if allowed_issuers == nil or table.getn(allowed_issuers) == 0 then
+    if allowed_issuers == nil or #allowed_issuers == 0 then
         return nil, "Allowed issuers is empty"
     end
     if jwt_claims.iss == nil then
