@@ -1,5 +1,5 @@
 local function validate_client_roles(allowed_client_roles, jwt_claims)
-    if allowed_client_roles == nil or table.getn(allowed_client_roles) == 0 then
+    if allowed_client_roles == nil or #allowed_client_roles == 0 then
         return true
     end
 
@@ -32,7 +32,7 @@ local function validate_client_roles(allowed_client_roles, jwt_claims)
 end
 
 local function validate_roles(allowed_roles, jwt_claims)
-    if allowed_roles == nil or table.getn(allowed_roles) == 0 then
+    if allowed_roles == nil or #allowed_roles == 0 then
         return true
     end
 
@@ -55,7 +55,7 @@ local function validate_roles(allowed_roles, jwt_claims)
 end
 
 local function validate_realm_roles(allowed_realm_roles, jwt_claims)
-    if allowed_realm_roles == nil or table.getn(allowed_realm_roles) == 0 then
+    if allowed_realm_roles == nil or #allowed_realm_roles == 0 then
         return true
     end
 
