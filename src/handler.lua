@@ -435,6 +435,67 @@ local function do_authentication(conf)
     return false, { status = 403, message = "Access token does not have the required scope/role: " .. err }
 end
 
+local function set_internal_request_headers(conf, jwt_claims)
+    kong.log.warn('DEBUG: Calling set_internal_request_headers()')
+
+    if not conf.internal_request_headers or #conf.internal_request_headers == 0 then
+        kong.log.warn('DEBUG: No internal_request_headers configured')
+        return
+    end
+
+    if not jwt_claims then
+        kong.log.warn('DEBUG: No JWT claims available for header injection')
+        return
+    end
+
+    kong.log.warn('DEBUG: Processing ' .. #conf.internal_request_headers .. ' header mappings')
+    kong.log.warn('DEBUG: JWT claims available: ' .. table_to_string(jwt_claims))
+
+    local set_header = kong.service.request.set_header
+
+    for _, header_mapping in ipairs(conf.internal_request_headers) do
+        kong.log.warn('DEBUG: Processing header mapping: ' .. header_mapping)
+
+        -- Parse header_name:claim_path format
+        local header_name, claim_path = header_mapping:match("([^:]+):([^:]+)")
+        if not header_name or not claim_path then
+            kong.log.warn('Invalid header mapping format: ' .. header_mapping .. ' (expected format: header_name:claim_path)')
+            goto continue
+        end
+
+        kong.log.warn('DEBUG: Parsed - header_name: ' .. header_name .. ', claim_path: ' .. claim_path)
+
+        -- Extract claim value
+        local claim_value = jwt_claims
+        for part in claim_path:gmatch("[^%.]+") do
+            kong.log.warn('DEBUG: Looking for claim part: ' .. part)
+            if claim_value and type(claim_value) == "table" then
+                claim_value = claim_value[part]
+                kong.log.warn('DEBUG: Found claim value: ' .. tostring(claim_value))
+            else
+                kong.log.warn('DEBUG: Claim value is nil or not a table')
+                claim_value = nil
+                break
+            end
+        end
+
+        if claim_value then
+            if type(claim_value) == "table" then
+                -- Convert arrays/tables to JSON string
+                local cjson = require("cjson")
+                claim_value = cjson.encode(claim_value)
+            end
+
+            kong.log.warn('DEBUG: Setting header: ' .. header_name .. ' = ' .. tostring(claim_value))
+            set_header(header_name, tostring(claim_value))
+        else
+            kong.log.warn('DEBUG: Claim not found for path: ' .. claim_path)
+        end
+
+        ::continue::
+    end
+end
+
 function JwtKeycloakHandler:access(conf)
     kong.log.debug('Calling access()')
     -- check if preflight request and whether it should be authenticated
@@ -478,6 +539,19 @@ function JwtKeycloakHandler:access(conf)
             end
 
             return kong.response.exit(err.status, err.errors or { message = err.message })
+        end
+    else
+        -- Authentication successful, inject headers based on JWT claims
+        local jwt_keycloak_token = kong.ctx.shared.jwt_keycloak_token
+        if jwt_keycloak_token and jwt_keycloak_token.claims then
+            kong.log.warn('DEBUG: Injecting headers from JWT claims')
+            kong.log.warn('DEBUG: Available claims: ' .. table_to_string(jwt_keycloak_token.claims))
+            set_internal_request_headers(conf, jwt_keycloak_token.claims)
+        else
+            kong.log.warn('DEBUG: No JWT token found in context for header injection')
+            if jwt_keycloak_token then
+                kong.log.warn('DEBUG: JWT token exists but no claims: ' .. table_to_string(jwt_keycloak_token))
+            end
         end
     end
 end
