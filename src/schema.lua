@@ -18,6 +18,8 @@ return {
           { allowed_iss = { type = "set", elements = { type = "string" }, required = true }, },
           { iss_key_grace_period = { type = "number", default = 10, between = { 1, 60 }, }, },
           { well_known_template = { type = "string", default = "%s/.well-known/openid-configuration" }, },
+          { keycloak_timeout = { type = "number", default = 30000, between = { 1000, 120000 }, }, },
+          { ssl_verify = { type = "string", default = "yes", one_of = { "yes", "no" }, }, },
 
           { scope = { type = "set", elements = { type = "string" }, default = nil }, },
           { roles = { type = "set", elements = { type = "string" }, default = nil }, },

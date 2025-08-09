@@ -254,8 +254,8 @@ local function validate_signature(conf, jwt, second_call)
         accept_unsupported_alg = false,
         token_signing_alg_values_expected = { conf.algorithm or "RS256" },
         discovery = string.format(conf.well_known_template, jwt.claims.iss),
-        timeout = 10000,
-        ssl_verify = "no"
+        timeout = conf.keycloak_timeout or 30000,  -- Default 30 seconds, configurable
+        ssl_verify = conf.ssl_verify or "yes"  -- Enable SSL verification by default
     }
 
     local discovery_doc, err = require("resty.openidc").get_discovery_doc(opts)
@@ -357,6 +357,21 @@ local function do_authentication(conf)
     -- Decode token
     local jwt, err
     if token then
+        -- Validate token format before parsing
+        if type(token) ~= "string" or token == "" then
+            return false, { status = 401, message = "Invalid token format" }
+        end
+
+        -- Check basic JWT structure (3 parts separated by dots)
+        local parts = {}
+        for part in token:gmatch("[^%.]+") do
+            table.insert(parts, part)
+        end
+
+        if #parts ~= 3 then
+            return false, { status = 401, message = "Malformed JWT token" }
+        end
+
         jwt, err = jwt_decoder:new(token)
         if err then
             return false, { status = 401, message = "Bad token; " .. tostring(err) }

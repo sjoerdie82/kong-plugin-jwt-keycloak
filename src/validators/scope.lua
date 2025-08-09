@@ -7,6 +7,11 @@ local function validate_scope(allowed_scopes, jwt_claims)
         return nil, "Missing required scope claim"
     end
 
+    -- Validate scope is a string
+    if type(jwt_claims.scope) ~= "string" then
+        return nil, "Invalid scope claim format"
+    end
+
     for _, curr_scope in pairs(allowed_scopes) do
         if string.find(jwt_claims.scope, curr_scope) then
             return true
