@@ -1,8 +1,5 @@
 local constants = require "kong.constants"
 local jwt_decoder = require "kong.plugins.jwt.jwt_parser"
-local cjson = require("cjson")
-local socket = require "socket"
-local keycloak_keys = require("kong.plugins.jwt-keycloak.keycloak_keys")
 
 local validate_issuer = require("kong.plugins.jwt-keycloak.validators.issuers").validate_issuer
 local validate_scope = require("kong.plugins.jwt-keycloak.validators.scope").validate_scope
@@ -14,8 +11,11 @@ local re_gmatch = ngx.re.gmatch
 
 local JwtKeycloakHandler = {
   VERSION  = "1.1.0",
-  PRIORITY = 1005,
+  PRIORITY = tonumber(os.getenv("JWT_KEYCLOAK_PRIORITY")) or 1005,
 }
+
+-- Default cache TTL for JWKS/discovery (seconds)
+local DEFAULT_DISCOVERY_CACHE_TTL = 300
 
 local function table_to_string(tbl)
     local result = ""
@@ -40,75 +40,6 @@ local function table_to_string(tbl)
         result = result:sub(1, result:len() - 1)
     end
     return result
-end
-
-local function retrieve_token_payload(internal_request_headers)
-    if not internal_request_headers or #internal_request_headers == 0 then
-        return nil
-    end
-    kong.log.debug('retrieve_token_payload() Getting token payload from internal headers')
-
-    local authenticated_consumer = ngx.ctx.authenticated_consumer
-    if authenticated_consumer then
-        kong.log.debug('retrieve_token_payload() authenticated_consumer found')
-    end
-
-    local jwt_keycloak_token = kong.ctx.shared.jwt_keycloak_token
-    if jwt_keycloak_token then
-        kong.log.debug('retrieve_token_payload() jwt_keycloak_token found')
-    end
-
-    local shared_authenticated_jwt_token = kong.ctx.shared.authenticated_jwt_token
-    if shared_authenticated_jwt_token then
-        kong.log.debug('retrieve_token_payload() shared_authenticated_jwt_token found')
-    end
-
-    local authenticated_jwt_token = ngx.ctx.authenticated_jwt_token
-    if authenticated_jwt_token then
-        kong.log.debug('retrieve_token_payload() authenticated_jwt_token found')
-    end
-
-    for _, kong_header in pairs(internal_request_headers) do
-        kong.log.debug('retrieve_token_payload() checking header: ' .. kong_header)
-        local kong_header_value = kong.request.get_header(kong_header)
-        if kong_header_value then
-            kong.log.debug('retrieve_token_payload() found header value')
-
-            if kong_header == 'X-Access-Token' then
-                local accessTokenParts = {}
-                for match in string.gmatch(kong_header_value, "[^%.]+") do
-                    table.insert(accessTokenParts, match)
-                end
-                if #accessTokenParts >= 2 then
-                    kong_header_value = accessTokenParts[2]
-                    kong.log.debug('retrieve_token_payload() extracted access token payload')
-                else
-                    kong.log.warn('retrieve_token_payload() invalid X-Access-Token format')
-                    goto continue
-                end
-            end
-
-            local decoded_kong_header_value = ngx.decode_base64(kong_header_value)
-            if not decoded_kong_header_value then
-                kong.log.warn('retrieve_token_payload() failed to decode base64 value')
-                goto continue
-            end
-
-            kong.log.debug('retrieve_token_payload() decoded header value')
-
-            local token_payload, err = cjson.decode(decoded_kong_header_value)
-            if not token_payload then
-                kong.log.warn('retrieve_token_payload() failed to parse JSON: ' .. (err or 'unknown error'))
-                goto continue
-            end
-
-            return token_payload
-        end
-
-        ::continue::
-    end
-
-    return nil
 end
 
 --- Retrieve a JWT in a request.
@@ -229,41 +160,40 @@ local function set_consumer(consumer, credential, token)
     end
 end
 
-local function get_keys(well_known_endpoint)
-    kong.log.debug('Getting public keys from keycloak...')
-    local keys, err = keycloak_keys.get_issuer_keys(well_known_endpoint)
-    if err then
-        return nil, err
-    end
-
-    local decoded_keys = {}
-    for i, key in ipairs(keys) do
-        decoded_keys[i] = jwt_decoder:base64_decode(key)
-    end
-
-    kong.log.debug('Number of keys retrieved: ' .. #decoded_keys)
-    return {
-        keys = decoded_keys,
-        updated_at = socket.gettime(),
-    }
-end
-
-local function validate_signature(conf, jwt, second_call)
+local function validate_signature(conf, jwt)
     kong.log.debug('Calling validate_signature()')
+
+    -- Coerce ssl_verify to boolean if provided as string
+    local ssl_verify = conf.ssl_verify
+    if type(ssl_verify) == "string" then
+        ssl_verify = (ssl_verify == "yes" or ssl_verify == "true")
+    end
+
+    local alg = conf.algorithm or "RS256"
+    if alg:match("^HS") then
+        -- HS* not supported with OIDC discovery/JWKS
+        return false, { status = 400, message = "HS* algorithms not supported" }
+    end
+
+    -- Use plugin config or default for discovery/JWKS cache TTL
+    local discovery_cache_ttl = conf.discovery_cache_ttl or DEFAULT_DISCOVERY_CACHE_TTL
 
     local opts = {
         accept_none_alg = false,
         accept_unsupported_alg = false,
-        token_signing_alg_values_expected = { conf.algorithm or "RS256" },
+        token_signing_alg_values_expected = { alg },
         discovery = string.format(conf.well_known_template, jwt.claims.iss),
         timeout = conf.keycloak_timeout or 30000,
-        ssl_verify = conf.ssl_verify or "yes"
+        ssl_verify = (ssl_verify ~= false),
+        discovery_cache_ttl = discovery_cache_ttl,
+        jwks_cache_ttl = discovery_cache_ttl, -- use same TTL for JWKS
+        -- Optionally, pass a shared dict name for resty.openidc to use
+        -- cache = ngx.shared.jwt_keycloak_discovery_cache,
     }
 
     local discovery_doc, err = require("resty.openidc").get_discovery_doc(opts)
     if err then
         kong.log.err('Discovery document retrieval failed: ' .. err)
-            -- return error instead of responding here; caller decides
         return false, { status = 403, message = "Unable to get discovery document for issuer" }
     end
 
@@ -279,7 +209,12 @@ local function validate_signature(conf, jwt, second_call)
 
     local json, verr, token = require("resty.openidc").bearer_jwt_verify(opts, claim_spec)
     if verr then
-        kong.log.err('Bearer JWT verify failed: ' .. verr)
+        -- Log expired token and similar validation errors as warn, not error
+        if verr:find("expired") or verr:find("not before") or verr:find("invalid claim") then
+            kong.log.warn('[jwt-keycloak] Bearer JWT verify failed: ' .. verr)
+        else
+            kong.log.err('[jwt-keycloak] Bearer JWT verify failed: ' .. verr)
+        end
         return false, { status = 401, message = "Invalid token signature" }
     end
 
@@ -328,7 +263,8 @@ local function do_authentication(conf)
     local token, err = retrieve_token(conf)
     if err then
         kong.log.err('do_authentication() token retrieval error: ' .. err)
-        return kong.response.exit(500, { message = "An unexpected error occurred" })
+        -- return error to let access() handle anonymous/redirect logic
+        return false, { status = 500, message = "An unexpected error occurred" }
     end
 
     local jwt_claims
@@ -499,7 +435,7 @@ function JwtKeycloakHandler:access(conf)
         return
     end
 
-    if conf.anonymous and kong.client.get_credential() then
+    if conf.anonymous and conf.anonymous ~= "" and kong.client.get_credential() then
         -- we're already authenticated, and we're configured for using anonymous,
         -- hence we're in a logical OR between auth methods and we're already done.
         return
@@ -507,7 +443,7 @@ function JwtKeycloakHandler:access(conf)
 
     local ok, err = do_authentication(conf)
     if not ok then
-        if conf.anonymous then
+        if conf.anonymous and conf.anonymous ~= "" then
             -- get anonymous user
             local consumer_cache_key = kong.db.consumers:cache_key(conf.anonymous)
             local consumer, aerr = kong.cache:get(consumer_cache_key, nil,
@@ -515,7 +451,15 @@ function JwtKeycloakHandler:access(conf)
                     conf.anonymous, true)
             if aerr then
                 kong.log.err(aerr)
-                return kong.response.exit(500, { message = "An unexpected error occurred" })
+                -- If anonymous consumer cannot be loaded, treat as normal auth failure
+                local status = err and err.status or 401
+                local generic_message = "Unauthorized"
+                if status == 403 then
+                    generic_message = "Forbidden"
+                elseif status == 500 then
+                    generic_message = "An unexpected error occurred"
+                end
+                return kong.response.exit(status, { message = generic_message })
             end
 
             set_consumer(consumer, nil, nil)
@@ -531,7 +475,15 @@ function JwtKeycloakHandler:access(conf)
                 return ngx.redirect(url)
             end
 
-            return kong.response.exit(err.status, err.errors or { message = err.message })
+            -- Safer error messages: only expose generic error to client
+            local status = err and err.status or 401
+            local generic_message = "Unauthorized"
+            if status == 403 then
+                generic_message = "Forbidden"
+            elseif status == 500 then
+                generic_message = "An unexpected error occurred"
+            end
+            return kong.response.exit(status, { message = generic_message })
         end
     else
         -- Authentication successful, inject headers based on JWT claims

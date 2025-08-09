@@ -34,7 +34,7 @@ return {
           { algorithm = {
             type = "string",
             default = "RS256",
-            one_of = { "RS256", "RS384", "RS512", "HS256", "HS384", "HS512" }
+            one_of = { "RS256", "RS384", "RS512" }
           }},
 
           { allowed_iss = {
@@ -42,6 +42,7 @@ return {
             elements = { type = "string" },
             required = true
           }},
+          -- deprecated: retained for backward compatibility; no-op in implementation
           { iss_key_grace_period = {
             type = "number",
             default = 10,
@@ -57,9 +58,14 @@ return {
             between = { 1000, 120000 }
           }},
           { ssl_verify = {
-            type = "string",
-            default = "yes",
-            one_of = { "yes", "no" }
+            type = "boolean",
+            default = true,
+          }},
+          { discovery_cache_ttl = {
+            type = "number",
+            default = 300,
+            between = { 10, 86400 },
+            required = false,
           }},
 
           { scope = {
