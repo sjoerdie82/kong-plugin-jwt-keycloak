@@ -291,13 +291,22 @@ local function match_consumer(conf, jwt)
 
     kong.log.debug('match_consumer() looking for consumer with claim: ' .. conf.consumer_match_claim .. ' = ' .. tostring(consumer_id))
 
+    -- Try to detect if consumer_id is a UUID (simple check)
+    local is_uuid = type(consumer_id) == "string" and consumer_id:match("^[%x%-]+$") and #consumer_id == 36
+
     if conf.consumer_match_claim_custom_id then
         kong.log.debug('match_consumer() searching by custom_id: ' .. tostring(consumer_id))
         consumer, err = kong.db.consumers:select_by_custom_id(consumer_id)
-    else
+    elseif conf.consumer_match_claim_username then
+        kong.log.debug('match_consumer() searching by username: ' .. tostring(consumer_id))
+        consumer, err = kong.db.consumers:select_by_username(consumer_id)
+    elseif is_uuid then
         kong.log.debug('match_consumer() searching by id: ' .. tostring(consumer_id))
         local consumer_cache_key = kong.db.consumers:cache_key(consumer_id)
         consumer, err = kong.cache:get(consumer_cache_key, nil, load_consumer, consumer_id, true)
+    else
+        kong.log.debug('match_consumer() claim is not a UUID, trying username')
+        consumer, err = kong.db.consumers:select_by_username(consumer_id)
     end
 
     if err then
