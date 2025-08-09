@@ -7,16 +7,23 @@ local function validate_scope(allowed_scopes, jwt_claims)
         return nil, "Missing required scope claim"
     end
 
-    -- Validate scope is a string
+    -- Validate scope is a string of space-delimited scopes per RFC 6749
     if type(jwt_claims.scope) ~= "string" then
         return nil, "Invalid scope claim format"
     end
 
-    for _, curr_scope in pairs(allowed_scopes) do
-        if string.find(jwt_claims.scope, curr_scope) then
+    -- Build a set of scopes for exact match lookup
+    local claim_scopes = {}
+    for s in string.gmatch(jwt_claims.scope, "%S+") do
+        claim_scopes[s] = true
+    end
+
+    for _, required in pairs(allowed_scopes) do
+        if claim_scopes[required] then
             return true
         end
     end
+
     return nil, "Missing required scope"
 end
 

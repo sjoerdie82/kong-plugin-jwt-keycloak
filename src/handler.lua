@@ -124,7 +124,8 @@ local function retrieve_token(conf)
     local args = kong.request.get_query()
     for _, v in ipairs(conf.uri_param_names) do
         if args[v] then
-            kong.log.debug('retrieve_token() args[v]: ' .. args[v])
+            -- Avoid logging token contents
+            kong.log.debug('retrieve_token() token found in query parameter: ' .. v)
             return args[v]
         end
     end
@@ -134,7 +135,8 @@ local function retrieve_token(conf)
         kong.log.debug('retrieve_token() checking cookie: ' .. v)
         local cookie = var["cookie_" .. v]
         if cookie and cookie ~= "" then
-            kong.log.debug('retrieve_token() cookie value: ' .. cookie)
+            -- Avoid logging token contents
+            kong.log.debug('retrieve_token() token found in cookie: ' .. v)
             return cookie
         end
     end
@@ -261,7 +263,8 @@ local function validate_signature(conf, jwt, second_call)
     local discovery_doc, err = require("resty.openidc").get_discovery_doc(opts)
     if err then
         kong.log.err('Discovery document retrieval failed: ' .. err)
-        return kong.response.exit(403, { message = "Unable to get discovery document for issuer" })
+            -- return error instead of responding here; caller decides
+        return false, { status = 403, message = "Unable to get discovery document for issuer" }
     end
 
     local jwt_validators = require "resty.jwt-validators"
@@ -274,14 +277,14 @@ local function validate_signature(conf, jwt, second_call)
         nbf = jwt_validators.opt_is_not_before(),
     }
 
-    local json, err, token = require("resty.openidc").bearer_jwt_verify(opts, claim_spec)
-    if err then
-        kong.log.err('Bearer JWT verify failed: ' .. err)
-        return kong.response.exit(401, { message = "Invalid token signature" })
+    local json, verr, token = require("resty.openidc").bearer_jwt_verify(opts, claim_spec)
+    if verr then
+        kong.log.err('Bearer JWT verify failed: ' .. verr)
+        return false, { status = 401, message = "Invalid token signature" }
     end
 
     kong.log.debug('JWT signature verified using resty.openidc')
-    return nil
+    return true
 end
 
 local function match_consumer(conf, jwt)
@@ -335,12 +338,9 @@ local function do_authentication(conf)
 
     if token_type ~= "string" then
         if token_type == "nil" then
-            jwt_claims = retrieve_token_payload(conf.internal_request_headers)
-            if not jwt_claims then
-                kong.log.debug('do_authentication() no token found in request')
-                return false, { status = 401, message = "Unauthorized" }
-            end
-            kong.log.debug('do_authentication() token payload retrieved from internal headers')
+            -- No token provided; do not trust headers for JWT payload
+            kong.log.debug('do_authentication() no token found in request')
+            return false, { status = 401, message = "Unauthorized" }
         elseif token_type == "table" then
             kong.log.warn('do_authentication() multiple tokens provided')
             return false, { status = 401, message = "Multiple tokens provided" }
@@ -350,7 +350,7 @@ local function do_authentication(conf)
         end
     end
 
-    local jwt, err
+    local jwt, jerr
     if token then
         -- Validate token format before parsing
         if type(token) ~= "string" or token == "" then
@@ -367,15 +367,13 @@ local function do_authentication(conf)
             return false, { status = 401, message = "Malformed JWT token" }
         end
 
-        jwt, err = jwt_decoder:new(token)
-        if err then
-            return false, { status = 401, message = "Bad token; " .. tostring(err) }
+        jwt, jerr = jwt_decoder:new(token)
+        if jerr then
+            return false, { status = 401, message = "Bad token; " .. tostring(jerr) }
         end
     end
 
-
-
-    -- Verify algorithim
+    -- Verify algorithm, issuer and signature (issuer first to prevent SSRF)
     if jwt then
         kong.log.debug('do_authentication() Verify token...')
         jwt_claims = jwt.claims
@@ -384,9 +382,15 @@ local function do_authentication(conf)
             return false, { status = 403, message = "Invalid algorithm" }
         end
 
-        err = validate_signature(conf, jwt)
-        if err ~= nil then
-            return false, err
+        -- Validate issuer before any discovery/JWKS network calls
+        local ok_iss, iss_err = validate_issuer(conf.allowed_iss, jwt_claims)
+        if not ok_iss then
+            return false, { status = 401, message = iss_err }
+        end
+
+        local ok_sig, sig_err = validate_signature(conf, jwt)
+        if not ok_sig then
+            return false, sig_err
         end
 
         -- Verify the JWT registered claims
@@ -404,41 +408,33 @@ local function do_authentication(conf)
                 return false, { status = 403, message = "Token claims invalid: " .. table_to_string(errors) }
             end
         end
-
     end
 
-
-
-    -- Verify that the issuer is allowed
-    kong.log.debug('do_authentication() Verify that the issuer is allowed...')
-    if not validate_issuer(conf.allowed_iss, jwt_claims) then
-        return false, { status = 401, message = "Token issuer not allowed" }
-    end
-
+    -- Issuer was already validated above when jwt exists
 
     -- Match consumer
     if conf.consumer_match and jwt then
         kong.log.debug('do_authentication() Match consumer...')
-        local ok, err = match_consumer(conf, jwt)
+        local ok, merr = match_consumer(conf, jwt)
         if not ok then
-            return ok, err
+            return ok, merr
         end
     end
 
-    -- Verify roles or scopes
-    kong.log.debug('do_authentication() Verify roles or scopes...')
-    local ok, err = validate_scope(conf.scope, jwt_claims)
+    -- Verify roles and scopes (AND semantics across configured sets)
+    kong.log.debug('do_authentication() Verify scopes and roles...')
+    local ok, verr = validate_scope(conf.scope, jwt_claims)
 
     if ok then
-        ok, err = validate_realm_roles(conf.realm_roles, jwt_claims)
+        ok, verr = validate_realm_roles(conf.realm_roles, jwt_claims)
     end
 
     if ok then
-        ok, err = validate_roles(conf.roles, jwt_claims)
+        ok, verr = validate_roles(conf.roles, jwt_claims)
     end
 
     if ok then
-        ok, err = validate_client_roles(conf.client_roles, jwt_claims)
+        ok, verr = validate_client_roles(conf.client_roles, jwt_claims)
     end
 
     if ok then
@@ -448,7 +444,7 @@ local function do_authentication(conf)
         return true
     end
 
-    return false, { status = 403, message = "Access token does not have the required scope/role: " .. err }
+    return false, { status = 403, message = "Access token does not have the required scope/role: " .. verr }
 end
 
 local function set_internal_request_headers(conf, jwt_claims)
@@ -514,11 +510,11 @@ function JwtKeycloakHandler:access(conf)
         if conf.anonymous then
             -- get anonymous user
             local consumer_cache_key = kong.db.consumers:cache_key(conf.anonymous)
-            local consumer, err = kong.cache:get(consumer_cache_key, nil,
+            local consumer, aerr = kong.cache:get(consumer_cache_key, nil,
                     load_consumer,
                     conf.anonymous, true)
-            if err then
-                kong.log.err(err)
+            if aerr then
+                kong.log.err(aerr)
                 return kong.response.exit(500, { message = "An unexpected error occurred" })
             end
 
