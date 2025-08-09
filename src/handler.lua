@@ -171,7 +171,7 @@ local function load_consumer(consumer_id, anonymous)
         end
         return nil, err
     end
-    kong.log.debug('load_consumer(): ' .. result)
+    kong.log.debug('load_consumer(): found consumer with id: ' .. (result and result.id or 'nil'))
     return result
 end
 
@@ -180,30 +180,37 @@ local function load_consumer_by_custom_id(custom_id)
     if not result then
         return nil, err
     end
-    kong.log.debug('load_consumer_by_custom_id(): ' .. result)
+    kong.log.debug('load_consumer_by_custom_id(): found consumer with custom_id: ' .. (result and result.custom_id or 'nil'))
     return result
 end
 
 local function set_consumer(consumer, credential, token)
-    kong.log.debug('Calling set_consumer()' .. credential)
-
     local set_header = kong.service.request.set_header
     local clear_header = kong.service.request.clear_header
 
+    -- Ensure constants are available
+    if not constants or not constants.HEADERS then
+        kong.log.err('Constants or HEADERS not available')
+        return
+    end
+
     if consumer and consumer.id then
-        set_header(constants.HEADERS.CONSUMER_ID, consumer.id)
+        kong.log.debug('Setting CONSUMER_ID header: ' .. tostring(constants.HEADERS.CONSUMER_ID) .. ' = ' .. tostring(consumer.id))
+        set_header(constants.HEADERS.CONSUMER_ID, tostring(consumer.id))
     else
         clear_header(constants.HEADERS.CONSUMER_ID)
     end
 
     if consumer and consumer.custom_id then
-        set_header(constants.HEADERS.CONSUMER_CUSTOM_ID, consumer.custom_id)
+        kong.log.debug('Setting CONSUMER_CUSTOM_ID header: ' .. tostring(constants.HEADERS.CONSUMER_CUSTOM_ID) .. ' = ' .. tostring(consumer.custom_id))
+        set_header(constants.HEADERS.CONSUMER_CUSTOM_ID, tostring(consumer.custom_id))
     else
         clear_header(constants.HEADERS.CONSUMER_CUSTOM_ID)
     end
 
     if consumer and consumer.username then
-        set_header(constants.HEADERS.CONSUMER_USERNAME, consumer.username)
+        kong.log.debug('Setting CONSUMER_USERNAME header: ' .. tostring(constants.HEADERS.CONSUMER_USERNAME) .. ' = ' .. tostring(consumer.username))
+        set_header(constants.HEADERS.CONSUMER_USERNAME, tostring(consumer.username))
     else
         clear_header(constants.HEADERS.CONSUMER_USERNAME)
     end
@@ -215,16 +222,17 @@ local function set_consumer(consumer, credential, token)
         ngx.ctx.authenticated_jwt_token = token  -- backward compatibilty only
 
         if credential.username then
-            set_header(constants.HEADERS.CREDENTIAL_USERNAME, credential.username)
+            kong.log.debug('Setting CREDENTIAL_IDENTIFIER header: ' .. tostring(constants.HEADERS.CREDENTIAL_IDENTIFIER) .. ' = ' .. tostring(credential.username))
+            set_header(constants.HEADERS.CREDENTIAL_IDENTIFIER, tostring(credential.username))
         else
-            clear_header(constants.HEADERS.CREDENTIAL_USERNAME)
+            clear_header(constants.HEADERS.CREDENTIAL_IDENTIFIER)
         end
 
         clear_header(constants.HEADERS.ANONYMOUS)
 
     else
-        clear_header(constants.HEADERS.CREDENTIAL_USERNAME)
-        set_header(constants.HEADERS.ANONYMOUS, true)
+        clear_header(constants.HEADERS.CREDENTIAL_IDENTIFIER)
+        set_header(constants.HEADERS.ANONYMOUS, "true")
     end
 end
 
@@ -290,25 +298,33 @@ local function match_consumer(conf, jwt)
     local consumer, err
     local consumer_id = jwt.claims[conf.consumer_match_claim]
 
+    kong.log.debug('match_consumer() looking for consumer with claim: ' .. conf.consumer_match_claim .. ' = ' .. tostring(consumer_id))
+
+    local consumer_cache_key
     if conf.consumer_match_claim_custom_id then
+        kong.log.debug('match_consumer() searching by custom_id: ' .. tostring(consumer_id))
         consumer_cache_key = "custom_id_key_" .. consumer_id
         consumer, err = kong.cache:get(consumer_cache_key, nil, load_consumer_by_custom_id, consumer_id, true)
     else
+        kong.log.debug('match_consumer() searching by id: ' .. tostring(consumer_id))
         consumer_cache_key = kong.db.consumers:cache_key(consumer_id)
         consumer, err = kong.cache:get(consumer_cache_key, nil, load_consumer, consumer_id, true)
     end
 
     if err then
-        kong.log.err(err)
+        kong.log.err('match_consumer() error: ' .. tostring(err))
     end
 
     if not consumer and not conf.consumer_match_ignore_not_found then
+        kong.log.warn('match_consumer() consumer not found for: ' .. tostring(consumer_id))
         return false, { status = 401, message = "Unable to find consumer for token" }
     end
 
-    kong.log.debug('match_consumer() consumer=' .. consumer)
     if consumer then
+        kong.log.debug('match_consumer() found consumer: ' .. (consumer.username or consumer.custom_id or consumer.id))
         set_consumer(consumer, nil, nil)
+    else
+        kong.log.debug('match_consumer() no consumer found, but ignoring due to consumer_match_ignore_not_found=true')
     end
 
     return true
@@ -403,7 +419,7 @@ local function do_authentication(conf)
     -- Match consumer
     if conf.consumer_match and jwt then
         kong.log.debug('do_authentication() Match consumer...')
-        ok, err = match_consumer(conf, jwt)
+        local ok, err = match_consumer(conf, jwt)
         if not ok then
             return ok, err
         end
@@ -436,26 +452,18 @@ local function do_authentication(conf)
 end
 
 local function set_internal_request_headers(conf, jwt_claims)
-    kong.log.warn('DEBUG: Calling set_internal_request_headers()')
-
     if not conf.internal_request_headers or #conf.internal_request_headers == 0 then
-        kong.log.warn('DEBUG: No internal_request_headers configured')
         return
     end
 
     if not jwt_claims then
-        kong.log.warn('DEBUG: No JWT claims available for header injection')
+        kong.log.debug('No JWT claims available for header injection')
         return
     end
-
-    kong.log.warn('DEBUG: Processing ' .. #conf.internal_request_headers .. ' header mappings')
-    kong.log.warn('DEBUG: JWT claims available: ' .. table_to_string(jwt_claims))
 
     local set_header = kong.service.request.set_header
 
     for _, header_mapping in ipairs(conf.internal_request_headers) do
-        kong.log.warn('DEBUG: Processing header mapping: ' .. header_mapping)
-
         -- Parse header_name:claim_path format
         local header_name, claim_path = header_mapping:match("([^:]+):([^:]+)")
         if not header_name or not claim_path then
@@ -463,17 +471,12 @@ local function set_internal_request_headers(conf, jwt_claims)
             goto continue
         end
 
-        kong.log.warn('DEBUG: Parsed - header_name: ' .. header_name .. ', claim_path: ' .. claim_path)
-
         -- Extract claim value
         local claim_value = jwt_claims
         for part in claim_path:gmatch("[^%.]+") do
-            kong.log.warn('DEBUG: Looking for claim part: ' .. part)
             if claim_value and type(claim_value) == "table" then
                 claim_value = claim_value[part]
-                kong.log.warn('DEBUG: Found claim value: ' .. tostring(claim_value))
             else
-                kong.log.warn('DEBUG: Claim value is nil or not a table')
                 claim_value = nil
                 break
             end
@@ -486,10 +489,7 @@ local function set_internal_request_headers(conf, jwt_claims)
                 claim_value = cjson.encode(claim_value)
             end
 
-            kong.log.warn('DEBUG: Setting header: ' .. header_name .. ' = ' .. tostring(claim_value))
             set_header(header_name, tostring(claim_value))
-        else
-            kong.log.warn('DEBUG: Claim not found for path: ' .. claim_path)
         end
 
         ::continue::
@@ -511,7 +511,6 @@ function JwtKeycloakHandler:access(conf)
 
     local ok, err = do_authentication(conf)
     if not ok then
-        kong.log.warn('do_authentication() returned False')
         if conf.anonymous then
             -- get anonymous user
             local consumer_cache_key = kong.db.consumers:cache_key(conf.anonymous)
@@ -525,8 +524,6 @@ function JwtKeycloakHandler:access(conf)
 
             set_consumer(consumer, nil, nil)
         else
-            kong.log.err('do_authentication() error: ' .. err.message)
-
             if conf.redirect_after_authentication_failed_uri then
                 local scheme = kong.request.get_scheme()
                 local host = kong.request.get_host()
@@ -544,14 +541,7 @@ function JwtKeycloakHandler:access(conf)
         -- Authentication successful, inject headers based on JWT claims
         local jwt_keycloak_token = kong.ctx.shared.jwt_keycloak_token
         if jwt_keycloak_token and jwt_keycloak_token.claims then
-            kong.log.warn('DEBUG: Injecting headers from JWT claims')
-            kong.log.warn('DEBUG: Available claims: ' .. table_to_string(jwt_keycloak_token.claims))
             set_internal_request_headers(conf, jwt_keycloak_token.claims)
-        else
-            kong.log.warn('DEBUG: No JWT token found in context for header injection')
-            if jwt_keycloak_token then
-                kong.log.warn('DEBUG: JWT token exists but no claims: ' .. table_to_string(jwt_keycloak_token))
-            end
         end
     end
 end
