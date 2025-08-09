@@ -175,15 +175,6 @@ local function load_consumer(consumer_id, anonymous)
     return result
 end
 
-local function load_consumer_by_custom_id(custom_id)
-    local result, err = kong.db.consumers:select_by_custom_id(custom_id)
-    if not result then
-        return nil, err
-    end
-    kong.log.debug('load_consumer_by_custom_id(): found consumer with custom_id: ' .. (result and result.custom_id or 'nil'))
-    return result
-end
-
 local function set_consumer(consumer, credential, token)
     local set_header = kong.service.request.set_header
     local clear_header = kong.service.request.clear_header
@@ -300,14 +291,13 @@ local function match_consumer(conf, jwt)
 
     kong.log.debug('match_consumer() looking for consumer with claim: ' .. conf.consumer_match_claim .. ' = ' .. tostring(consumer_id))
 
-    local consumer_cache_key
     if conf.consumer_match_claim_custom_id then
         kong.log.debug('match_consumer() searching by custom_id: ' .. tostring(consumer_id))
-        consumer_cache_key = "custom_id_key_" .. consumer_id
-        consumer, err = kong.cache:get(consumer_cache_key, nil, load_consumer_by_custom_id, consumer_id, true)
+        -- Use Kong's built-in cache for custom_id lookups to ensure proper cache invalidation
+        consumer, err = kong.db.consumers:select_by_custom_id(consumer_id)
     else
         kong.log.debug('match_consumer() searching by id: ' .. tostring(consumer_id))
-        consumer_cache_key = kong.db.consumers:cache_key(consumer_id)
+        local consumer_cache_key = kong.db.consumers:cache_key(consumer_id)
         consumer, err = kong.cache:get(consumer_cache_key, nil, load_consumer, consumer_id, true)
     end
 
