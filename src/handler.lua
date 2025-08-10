@@ -375,6 +375,8 @@ local function do_authentication(conf)
     end
 
     if not ok_scope then
+        -- This is the specific error message you were seeing
+        kong.log.warn('Access token does not have the required scope/role: ' .. err_scope)
         return false, { status = 403, message = "Access token does not have the required scope/role: " .. err_scope }
     end
 
@@ -503,10 +505,23 @@ function JwtKeycloakHandler:access(conf)
                 return ngx.redirect(url)
             end
 
-            -- Use the error details returned by do_authentication
+            -- Use generic messages for client-facing errors
             local status = err and err.status or 401
-            local message = err and err.message or "Unauthorized"
-            return kong.response.exit(status, { message = message })
+            local generic_message = "Unauthorized"
+            if status == 403 then
+                generic_message = "Forbidden"
+            elseif status >= 500 then
+                generic_message = "An unexpected error occurred"
+            end
+
+            -- MODIFIED: Change log level to warn for 401/403, keep err for others
+            if status == 401 or status == 403 then
+                kong.log.warn('Authentication failed with status ' .. status .. ': ' .. (err and err.message or "Unknown error"))
+            else
+                kong.log.err('Authentication failed with status ' .. status .. ': ' .. (err and err.message or "Unknown error"))
+            end
+
+            return kong.response.exit(status, { message = generic_message })
         end
     else
         -- Authentication successful, inject headers based on JWT claims

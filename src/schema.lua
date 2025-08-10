@@ -24,7 +24,7 @@ return {
             elements = { type = "string", one_of = { "exp", "nbf" } },
             default = { "exp" }
           }},
-          { anonymous = typedefs.uuid },
+          { anonymous = typedefs.uuid, default = nil }, -- REVERTED: Changed back to typedefs.uuid, keeping default = nil
           { run_on_preflight = { type = "boolean", default = true }},
           { maximum_expiration = {
             type = "number",
@@ -41,6 +41,11 @@ return {
             type = "set",
             elements = { type = "string" },
             required = true
+          }},
+          { allowed_aud = {
+            type = "set",
+            elements = { type = "string" },
+            default = nil,
           }},
           { iss_key_grace_period = {
             type = "number",
@@ -61,10 +66,10 @@ return {
             default = "yes",
             one_of = { "yes", "no" }
           }},
-          { discovery_cache_ttl = { -- ADDED: Allows configuration of discovery/JWKS cache TTL
+          { discovery_cache_ttl = {
             type = "number",
-            default = 300, -- Matches DEFAULT_DISCOVERY_CACHE_TTL in handler.lua
-            between = { 0, 31536000 } -- Example range, adjust as needed
+            default = 300,
+            between = { 0, 31536000 }
           }},
 
           { scope = {
@@ -91,7 +96,7 @@ return {
           { consumer_match = { type = "boolean", default = false }},
           { consumer_match_claim = { type = "string", default = "azp" }},
           { consumer_match_claim_custom_id = { type = "boolean", default = false }},
-          { consumer_match_claim_username = { type = "boolean", default = false }}, -- ADDED: For matching by username
+          { consumer_match_claim_username = { type = "boolean", default = false }},
           { consumer_match_ignore_not_found = { type = "boolean", default = false }},
 
           { internal_request_headers = {
