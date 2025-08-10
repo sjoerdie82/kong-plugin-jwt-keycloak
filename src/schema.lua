@@ -61,6 +61,11 @@ return {
             default = "yes",
             one_of = { "yes", "no" }
           }},
+          { discovery_cache_ttl = { -- ADDED: Allows configuration of discovery/JWKS cache TTL
+            type = "number",
+            default = 300, -- Matches DEFAULT_DISCOVERY_CACHE_TTL in handler.lua
+            between = { 0, 31536000 } -- Example range, adjust as needed
+          }},
 
           { scope = {
             type = "set",
@@ -86,6 +91,7 @@ return {
           { consumer_match = { type = "boolean", default = false }},
           { consumer_match_claim = { type = "string", default = "azp" }},
           { consumer_match_claim_custom_id = { type = "boolean", default = false }},
+          { consumer_match_claim_username = { type = "boolean", default = false }}, -- ADDED: For matching by username
           { consumer_match_ignore_not_found = { type = "boolean", default = false }},
 
           { internal_request_headers = {
