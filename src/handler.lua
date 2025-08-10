@@ -45,74 +45,8 @@ local function table_to_string(tbl)
     return result
 end
 
-local function retrieve_token_payload(internal_request_headers)
-    if not internal_request_headers or #internal_request_headers == 0 then
-        return nil
-    end
-    kong.log.debug('retrieve_token_payload() Getting token payload from internal headers')
-
-    local authenticated_consumer = ngx.ctx.authenticated_consumer
-    if authenticated_consumer then
-        kong.log.debug('retrieve_token_payload() authenticated_consumer found')
-    end
-
-    local jwt_keycloak_token = kong.ctx.shared.jwt_keycloak_token
-    if jwt_keycloak_token then
-        kong.log.debug('retrieve_token_payload() jwt_keycloak_token found')
-    end
-
-    local shared_authenticated_jwt_token = kong.ctx.shared.authenticated_jwt_token
-    if shared_authenticated_jwt_token then
-        kong.log.debug('retrieve_token_payload() shared_authenticated_jwt_token found')
-    end
-
-    local authenticated_jwt_token = ngx.ctx.authenticated_jwt_token
-    if authenticated_jwt_token then
-        kong.log.debug('retrieve_token_payload() authenticated_jwt_token found')
-    end
-
-    for _, kong_header in pairs(internal_request_headers) do
-        kong.log.debug('retrieve_token_payload() checking header: ' .. kong_header)
-        local kong_header_value = kong.request.get_header(kong_header)
-        if kong_header_value then
-            kong.log.debug('retrieve_token_payload() found header value')
-
-            if kong_header == 'X-Access-Token' then
-                local accessTokenParts = {}
-                for match in string.gmatch(kong_header_value, "[^%.]+") do
-                    table.insert(accessTokenParts, match)
-                end
-                if #accessTokenParts >= 2 then
-                    kong_header_value = accessTokenParts[2]
-                    kong.log.debug('retrieve_token_payload() extracted access token payload')
-                else
-                    kong.log.warn('retrieve_token_payload() invalid X-Access-Token format for header: ' .. kong_header)
-                    goto continue
-                end
-            end
-
-            local decoded_kong_header_value = ngx.decode_base64(kong_header_value)
-            if not decoded_kong_header_value then
-                kong.log.warn('retrieve_token_payload() failed to decode base64 value for header: ' .. kong_header)
-                goto continue
-            end
-
-            kong.log.debug('retrieve_token_payload() decoded header value for header: ' .. kong_header)
-
-            local token_payload, err = cjson.decode(decoded_kong_header_value)
-            if not token_payload then
-                kong.log.warn('retrieve_token_payload() failed to parse JSON for header: ' .. kong_header .. ' - ' .. (err or 'unknown error'))
-                goto continue
-            end
-
-            return token_payload
-        end
-
-        ::continue::
-    end
-
-    return nil
-end
+-- Removed retrieve_token_payload function as it's no longer used for authentication.
+-- Its previous use was to process unverified token payloads from internal headers.
 
 --- Retrieve a JWT in a request.
 -- Checks for the JWT in URI parameters, then in cookies, and finally
@@ -249,7 +183,7 @@ local function get_keys(well_known_endpoint)
     }
 end
 
--- MODIFIED: Returns ok, err instead of calling kong.response.exit directly
+-- Returns ok, err instead of calling kong.response.exit directly
 local function validate_signature(conf, jwt)
     kong.log.debug('Calling validate_signature()')
 
@@ -278,6 +212,11 @@ local function validate_signature(conf, jwt)
         nbf = jwt_validators.opt_is_not_before(),
     }
 
+    -- Audience validation
+    if conf.allowed_aud and #conf.allowed_aud > 0 then
+        claim_spec.aud = jwt_validators.has_audience_one_of(conf.allowed_aud)
+    end
+
     local json, verr, token = require("resty.openidc").bearer_jwt_verify(opts, claim_spec)
     if verr then
         -- Log expired token and similar validation errors as warn, not error
@@ -293,7 +232,7 @@ local function validate_signature(conf, jwt)
     return true
 end
 
--- MODIFIED: This function now only returns the consumer, it does not call set_consumer.
+-- This function now only returns the consumer, it does not call set_consumer.
 local function match_consumer(conf, jwt)
     kong.log.debug('Calling match_consumer()')
     local consumer, err
@@ -337,7 +276,7 @@ local function match_consumer(conf, jwt)
     end
 end
 
--- MODIFIED: This function handles all authentication steps and returns true/false with error.
+-- This function handles all authentication steps and returns true/false with error.
 local function do_authentication(conf)
     kong.log.debug('do_authentication() Starting authentication process')
 
@@ -353,84 +292,70 @@ local function do_authentication(conf)
     local token_type = type(token)
     kong.log.debug('do_authentication() token type: ' .. token_type)
 
-    if token_type ~= "string" then
-        if token_type == "nil" then
-            -- MODIFIED: If no token found, try to retrieve payload from internal headers
-            jwt_claims = retrieve_token_payload(conf.internal_request_headers)
-            if not jwt_claims then
-                kong.log.debug('do_authentication() no token or internal payload found in request')
-                return false, { status = 401, message = "Unauthorized" }
-            end
-            kong.log.debug('do_authentication() token payload retrieved from internal headers, skipping signature verification')
-            -- IMPORTANT: When jwt_claims are from internal headers, there's no JWT object for signature verification.
-            -- This assumes internal headers are trusted.
-        elseif token_type == "table" then
-            kong.log.warn('do_authentication() multiple tokens provided')
-            return false, { status = 401, message = "Multiple tokens provided" }
-        else
-            kong.log.warn('do_authentication() unrecognizable token type: ' .. token_type)
-            return false, { status = 401, message = "Unrecognizable token" }
-        end
-    else -- token_type is "string" (meaning a JWT was likely retrieved)
-        -- Validate token format before parsing
-        if token == "" then
-            return false, { status = 401, message = "Invalid token format" }
-        end
+    -- If no token found, authentication fails. We no longer attempt to extract claims
+    -- from internal headers without a signed JWT from a standard source.
+    if token_type ~= "string" or token == "" then
+        kong.log.debug('do_authentication() no valid token found in request')
+        return false, { status = 401, message = "Unauthorized" }
+    end
 
-        -- Check basic JWT structure (3 parts separated by dots)
-        local parts = {}
-        for part in token:gmatch("[^%.]+") do
-            table.insert(parts, part)
-        end
+    -- From here, we are certain 'token' is a non-empty string, and will proceed with JWT parsing and validation.
 
-        if #parts ~= 3 then
-            return false, { status = 401, message = "Malformed JWT token" }
-        end
+    -- Check basic JWT structure (3 parts separated by dots)
+    local parts = {}
+    for part in token:gmatch("[^%.]+") do
+        table.insert(parts, part)
+    end
 
-        jwt, err = jwt_decoder:new(token)
-        if err then
-            return false, { status = 401, message = "Bad token; " .. tostring(err) }
-        end
+    if #parts ~= 3 then
+        return false, { status = 401, message = "Malformed JWT token" }
+    end
 
-        -- Verify algorithm, issuer and signature
-        kong.log.debug('do_authentication() Verify token...')
-        jwt_claims = jwt.claims -- Assign claims once JWT is successfully parsed
+    jwt, err = jwt_decoder:new(token)
+    if err then
+        return false, { status = 401, message = "Bad token; " .. tostring(err) }
+    end
 
-        if jwt.header.alg ~= (conf.algorithm or "RS256") then
-            return false, { status = 403, message = "Invalid algorithm" }
-        end
+    -- Verify algorithm, issuer and signature
+    kong.log.debug('do_authentication() Verify token...')
+    jwt_claims = jwt.claims -- Assign claims once JWT is successfully parsed
 
-        local ok_iss, iss_err = validate_issuer(conf.allowed_iss, jwt_claims)
-        if not ok_iss then
-            return false, { status = 401, message = iss_err }
-        end
+    if jwt.header.alg ~= (conf.algorithm or "RS256") then
+        return false, { status = 403, message = "Invalid algorithm" }
+    end
 
-        -- MODIFIED: Call validate_signature and handle its return
-        local ok_sig, sig_err = validate_signature(conf, jwt)
-        if not ok_sig then
-            return false, sig_err
-        end
+    local ok_iss, iss_err = validate_issuer(conf.allowed_iss, jwt_claims)
+    if not ok_iss then
+        return false, { status = 401, message = iss_err }
+    end
 
-        -- Verify the JWT registered claims
-        kong.log.debug('do_authentication() Verify the JWT registered claims...')
-        local ok_claims, errors = jwt:verify_registered_claims(conf.claims_to_verify)
-        if not ok_claims then
-            return false, { status = 401, message = "Token claims invalid: " .. table_to_string(errors) }
-        end
+    -- Call validate_signature and handle its return
+    local ok_sig, sig_err = validate_signature(conf, jwt)
+    if not ok_sig then
+        return false, sig_err
+    end
 
-        -- Verify maximum expiration
-        kong.log.debug('do_authentication() Verify maximum expiration...')
-        if conf.maximum_expiration ~= nil and conf.maximum_expiration > 0 then
-            local ok_exp, errors_exp = jwt:check_maximum_expiration(conf.maximum_expiration)
-            if not ok_exp then
-                return false, { status = 403, message = "Token claims invalid: " .. table_to_string(errors_exp) }
-            end
+    -- Verify the JWT registered claims
+    kong.log.debug('do_authentication() Verify the JWT registered claims...')
+    local ok_claims, errors = jwt:verify_registered_claims(conf.claims_to_verify)
+    if not ok_claims then
+        return false, { status = 401, message = "Token claims invalid: " .. table_to_string(errors) }
+    end
+
+    -- Verify maximum expiration
+    kong.log.debug('do_authentication() Verify maximum expiration...')
+    if conf.maximum_expiration ~= nil and conf.maximum_expiration > 0 then
+        local ok_exp, errors_exp = jwt:check_maximum_expiration(conf.maximum_expiration)
+        if not ok_exp then
+            return false, { status = 403, message = "Token claims invalid: " .. table_to_string(errors_exp) }
         end
     end
 
-    -- If we reached here, jwt_claims should be populated either from the token or internal headers.
+    -- If we reached here, jwt_claims should be populated from the validated token.
     if not jwt_claims then
-        return false, { status = 401, message = "Authentication failed: No JWT claims found." }
+        -- This case should theoretically not be hit if a JWT was successfully decoded,
+        -- but as a safeguard.
+        return false, { status = 401, message = "Authentication failed: No JWT claims found after validation." }
     end
 
     -- Verify roles and scopes
@@ -453,7 +378,7 @@ local function do_authentication(conf)
         return false, { status = 403, message = "Access token does not have the required scope/role: " .. err_scope }
     end
 
-    -- Authentication is successful based on token (or internal headers) and roles/scopes
+    -- Authentication is successful based on token and roles/scopes
     local matched_consumer = nil -- Variable to hold the consumer if matched
 
     -- Match consumer (only if JWT exists, as claims are needed)
@@ -466,7 +391,7 @@ local function do_authentication(conf)
         end
     end
 
-    -- MODIFIED: Call set_consumer only once, here, after all authentication logic is complete
+    -- Call set_consumer only once, here, after all authentication logic is complete
     if matched_consumer then
         local credential = {
             id = matched_consumer.id,
