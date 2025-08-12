@@ -354,9 +354,11 @@ local function do_authentication(conf)
     local jwt_claims = jwt.claims
 
     ----------------------------------------------------------------
-    -- 6d) Issuer whitelist check (your own config)
+    -- 6d) Issuer whitelist check
     ----------------------------------------------------------------
-    local ok, iss_err = validate_issuer(conf.allowed_iss, jwt_claims)
+    -- Pass the full plugin config so the validator can cache the issuer set
+    local ok, iss_err = validate_issuer(conf, jwt_claims)
+
     if not ok then
         return false, { status = 401, message = iss_err }
     end
