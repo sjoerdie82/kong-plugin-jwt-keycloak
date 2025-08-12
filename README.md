@@ -1,134 +1,160 @@
+**DISCLAIMER:**
+
+This project is a fork of https://github.com/febef/kong-plugin-jwt-keycloak. It was forked to specifically make the plugin compatible with Kong 3.9.1, with assistance from AI in addressing compatibility issues and improvements.
+
+---
+
 # Kong plugin jwt-keycloak
 
-# Installation
+A plugin for the [Kong Microservice API Gateway](https://konghq.com/solutions/gateway/) to validate access tokens issued by [Keycloak](https://www.keycloak.org/). It uses the [Well-Known Uniform Resource Identifiers](https://tools.ietf.org/html/rfc5785) provided by [Keycloak](https://www.keycloak.org/) to load [JWK](https://tools.ietf.org/html/rfc7517) public keys from issuers that are specifically allowed for each endpoint.
 
-To install do the following:
-* Copy the plugin folder `./jwt-keycloak` to your desired location, i.e: `/etc/kong/plugins/jwt-keycloak`
-* Set environmental variables for kong:
-    * `LUA_PATH=/etc/?.lua;;`
-    * `KONG_PLUGINS=bundled,jwt-keycloak`
+The biggest advantages of this plugin are that it supports:
 
-See [Dockerfile](./Dockerfile) for more concrete example.
+* Rotating public keys
+* Authorization based on token claims:
+    * `scope`
+    * `realm_access`
+    * `resource_access`
+* Matching Keycloak users/clients to Kong consumers
 
-# Usage
+If you have any suggestion or comments, please feel free to open an issue on this GitHub page.
 
-## Issuers
+## Table of Contents
 
-Each JWT token has an issuer claim (iss). To be able to validate the JWT's sent to the plugin it needs the public key of each issuer. In the case of keycloak the issuer claim is usually the url to the realm, i.e. `http://localhost:8080/auth/realms/master`.
+- [Table of Contents](#table-of-contents)
+- [Tested and working for](#tested-and-working-for)
+- [Installation](#installation)
+  - [Using luarocks](#using-luarocks)
+  - [From source](#from-source)
+    - [Packing the rock](#packing-the-rock)
+    - [Installing the rock](#installing-the-rock)
+  - [Enabling plugin](#enabling-plugin)
+  - [Changing plugin priority](#changing-plugin-priority)
+  - [Examples](#examples)
+- [Usage](#usage)
+  - [Enabling on endpoints](#enabling-on-endpoints)
+    - [Service](#service)
+    - [Route](#route)
+    - [Globally](#globally)
+  - [Parameters](#parameters)
+  - [Example](#example)
+  - [Caveats](#caveats)
+- [Testing](#testing)
+  - [Setup before tests](#setup-before-tests)
+  - [Running tests](#running-tests)
+  - [Useful debug commands](#useful-debug-commands)
 
-### Adding issuers
+## Tested and working for
 
-To add an issuer you first need to get the issuer public key. That is as simple as opening a browser and opening the realm url, i.e. `http://localhost:8080/auth/realms/master`.
+| Kong Version |   Tests passing    |
+| ------------ | :----------------: |
+| 3.9.1        | :white_check_mark: |
 
-Then add issuer to the plugin with the corresponding public key:
+| Keycloak Version |   Tests passing    |
+| ---------------- | :----------------: |
+| 26.3.0           | :white_check_mark: |
 
-```bash
-curl -X POST http://localhost:8001/jwt-keycloak \
-    -H "Accept: application/json" \
-    -H "Content-type: application/json" \
-    -d '{"iss":"http://localhost:8080/auth/realms/master","public_key":"MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAnBJCFPf4QJAul+Sn/GOnyojw83Z+nYusbC6XZUbrARbHCX6V5yjNDOQG9UBlSuMWuJZpbdmoQIdnrxHE3lPQKrKSrcQRilzuY294GN84C6EYBouWETksvO2zkzB/Zh3A8mQXbWrmrn/lkYNpA+6FCA8L3qgrojzg5d5j0Upv9qYocVoqowy7VkUHa+6pJscOmRI70AxvslkuX9zi0JFNj2i5Vj2J55OTIM/JhyoqZlFJjd3CEx/cuQzTBiIyyxUH0KTU3gnyoAhiJFPZ2Ovs5XjloMF5rBfXh2r4l937b+rQU/QMGI7IQ7I4t16CTnlSkfNkufZILLpZcECHRN5WjwIDAQAB"}'
-```
+## Installation
 
-Note: **Be careful that you do not url-encode the public key**.
-
-### Parameters
-
-| Parameter     | Requied   | Description |
-| ------------- | --------- | ----------- |
-| iss           | yes       | Name of the issuer as it appears in the access tokens, i.e. `http://localhost:8080/auth/realms/master`. |
-| public_key    | yes       | Public key of issuer. |
-
-### Browsing issuers
-
-```bash
-curl http://localhost:8001/jwt-keycloak
-```
-
-### Changing issuers
-
-```bash
-curl -X PATCH http://localhost:8001/jwt-keycloak/eb9c5b16-8a71-4a55-ab4a-33d07b52ad52 \
-    -H "Accept: application/json" \
-    -H "Content-type: application/json" \
-    -d '{"iss":"http://localhost:8080/auth/realms/master1","public_key":"MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAnBJCFPf4QJAul+Sn/GOnyojw83Z+nYusbC6XZUbrARbHCX6V5yjNDOQG9UBlSuMWuJZpbdmoQIdnrxHE3lPQKrKSrcQRilzuY294GN84C6EYBouWETksvO2zkzB/Zh3A8mQXbWrmrn/lkYNpA+6FCA8L3qgrojzg5d5j0Upv9qYocVoqowy7VkUHa+6pJscOmRI70AxvslkuX9zi0JFNj2i5Vj2J55OTIM/JhyoqZlFJjd3CEx/cuQzTBiIyyxUH0KTU3gnyoAhiJFPZ2Ovs5XjloMF5rBfXh2r4l937b+rQU/QMGI7IQ7I4t16CTnlSkfNkufZILLpZcECHRN5WjwIDAQAB"}'
-```
-
-### Deleting issuers
+### Using luarocks
 
 ```bash
-curl -X DELETE http://localhost:8001/jwt-keycloak/{id}
+luarocks install kong-plugin-jwt-keycloak
 ```
 
-## Enabling on endpoints
+### From source
 
-The same principle applies to this plugin as the standard jwt plugin that comes with kong. You can enable it on service, routes, apis and globally.
+#### Packing the rock
 
-### Service
+```bash
+export PLUGIN_VERSION=1.1.0-1
+luarocks make
+luarocks pack kong-plugin-jwt-keycloak ${PLUGIN_VERSION}
+```
+
+#### Installing the rock
+
+```bash
+export PLUGIN_VERSION=1.1.0-1
+luarocks install jwt-keycloak-${PLUGIN_VERSION}.all.rock
+```
+
+### Enabling plugin
+
+Set enabled kong enabled plugins, i.e. with environmental variable: `KONG_PLUGINS="bundled,jwt-keycloak"`
+
+### Changing plugin priority
+
+In some cases you might want to change the execution priority of the plugin. You can do that by setting an environmental variable: `JWT_KEYCLOAK_PRIORITY="900"`
+
+### Examples
+
+See [Dockerfile](./Dockerfile) or [luarocks Dockerfile](./luarocks.Dockerfile) for more concrete examples.
+
+## Usage
+
+### Enabling on endpoints
+
+The same principle applies to this plugin as the [standard jwt plugin that comes with kong](https://docs.konghq.com/hub/kong-inc/jwt/). You can enable it on service, routes and globally.
+
+#### Service
 
 ```bash
 curl -X POST http://localhost:8001/services/{service}/plugins \
     --data "name=jwt-keycloak" \
-    --data "config.allow_all_iss=true"
+    --data "config.allowed_iss=http://localhost:8080/auth/realms/master"
 ```
 
-### Route
-
+#### Route
 ```bash
 curl -X POST http://localhost:8001/routes/{route_id}/plugins \
     --data "name=jwt-keycloak" \
-    --data "config.allow_all_iss=true"
+    --data "config.allowed_iss=http://localhost:8080/auth/realms/master"
 ```
 
-### Api
-
-```bash
-curl -X POST http://localhost:8001/apis/{api}/plugins \
-    --data "name=jwt-keycloak" \
-    --data "config.allow_all_iss=true"
-```
-
-### Globally
+#### Globally
 
 ```bash
 curl -X POST http://localhost:8001/plugins \
     --data "name=jwt-keycloak" \
-    --data "config.allow_all_iss=true"
+    --data "config.allowed_iss=http://localhost:8080/auth/realms/master"
 ```
 
 ### Parameters
 
-| Parameter                                 | Requied   | Default   | Description |
-| ----------------------------------------- | --------- | --------- | ----------- |
-| name                                      |           |           | The name of the plugin to use, in this case `keycloak-jwt`. |
-| service_id                                |           |           | The id of the Service which this plugin will target. |
-| route_id                                  |           |           | The id of the Route which this plugin will target. |
-| enabled                                   |           |           | Whether this plugin will be applied. |
-| api_id                                    |           |           | The id of the API which this plugin will target. Note: The API Entity is deprecated in favor of Services since CE 0.13.0 and EE 0.32. |
-| config.uri_param_names                    | no        | `jwt`     | A list of querystring parameters that Kong will inspect to retrieve JWTs. |
-| config.cookie_names                       | no        |           | A list of cookie names that Kong will inspect to retrieve JWTs. |
-| config.run_on_preflight                   | no        | `true`    | A boolean value that indicates whether the plugin should run (and try to authenticate) on OPTIONS preflight requests, if set to false then OPTIONS requests will always be allowed. |
-| config.maximum_expiration                 | no        | `0`       | An integer limiting the lifetime of the JWT to maximum_expiration seconds in the future. Any JWT that has a longer lifetime will rejected (HTTP 403). If this value is specified, exp must be specified as well in the claims_to_verify property. The default value of 0 represents an indefinite period. Potential clock skew should be considered when configuring this value. |
-| config.claims_to_verify                   | no        | `exp`     | A list of registered claims (according to RFC 7519) that Kong can verify as well. Accepted values: exp, nbf |
-| config.algorithm                          | no        | `RS256`   | The algorithm used to verify the token's signature. Can be HS256, HS384, HS512, RS256, or ES256. |
-| config.allow_all_iss                      | semi      | `false`   | A boolean value that indicates if tokens from all issuers should be allowed to consume this route/service/api. |
-| config.allowed_iss                        | semi      |           | A list of allowed issuers for this route/service/api. This parameter is required if `allow_all_iss` is set to false |
-| config.roles                              | no        |           | A list of roles of current client the token must have to access the api, i.e. `["uma_protection"]`. The token only has to have one of the listed roles to be authorized. |
-| config.realm_roles                        | no        |           | A list of realm roles the token must have to access the api, i.e. `["offline_access"]`. The token only has to have one of the listed roles to be authorized. |
-| config.client_roles                       | no        |           | A list of roles of different client the token must have to access the api, i.e. `["account:manage-account"]`. The format for each entry should be `<CLIENT_NAME>:<ROLE_NAME>`. The token only has to have one of the listed roles to be authorized. |
-| config.consumer_match                     | no        | `false`   | A boolean value that indicates if the plugin should find a kong consumer with `custom_id` that equals the `consumer_match_claim` claim in the access token. |
-| config.consumer_match_claim               | no        | `azp`     | The claim name in the token that the plugin will try to match the kong `custom_id` against. |
-| config.consumer_match_ignore_not_found    | no        | `false`   | A boolean value that indicates if the request should be let through regardless if the plugin is able to match the request to a kong consumer or not. |
+| Parameter                              | Required | Default           | Description                                                                                                                                                                                                                                                                                                                                                                              |
+| -------------------------------------- | -------- | ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| name                                   | yes      |                   | The name of the plugin to use, in this case `keycloak-jwt`.                                                                                                                                                                                                                                                                                                                              |
+| service_id                             | semi     |                   | The id of the Service which this plugin will target.                                                                                                                                                                                                                                                                                                                                     |
+| route_id                               | semi     |                   | The id of the Route which this plugin will target.                                                                                                                                                                                                                                                                                                                                       |
+| enabled                                | no       | `true`            | Whether this plugin will be applied.                                                                                                                                                                                                                                                                                                                                                     |
+| config.uri_param_names                 | no       | `jwt`             | A list of querystring parameters that Kong will inspect to retrieve JWTs.                                                                                                                                                                                                                                                                                                                |
+| config.cookie_names                    | no       |                   | A list of cookie names that Kong will inspect to retrieve JWTs.                                                                                                                                                                                                                                                                                                                          |
+| config.claims_to_verify                | no       | `exp`             | A list of registered claims (according to [RFC 7519](https://tools.ietf.org/html/rfc7519)) that Kong can verify as well. Accepted values: `exp`, `nbf`.                                                                                                                                                                                                                                  |
+| config.anonymous                       | no       |                   | An optional string (consumer uuid) value to use as an “anonymous” consumer if authentication fails. If empty (default), the request will fail with an authentication failure `4xx`. Please note that this value must refer to the Consumer `id` attribute which is internal to Kong, and not its `custom_id`.                                                                            |
+| config.run_on_preflight                | no       | `true`            | A boolean value that indicates whether the plugin should run (and try to authenticate) on `OPTIONS` preflight requests, if set to false then `OPTIONS` requests will always be allowed.                                                                                                                                                                                                  |
+| config.maximum_expiration              | no       | `0`               | An integer limiting the lifetime of the JWT to `maximum_expiration` seconds in the future. Any JWT that has a longer lifetime will rejected (HTTP 403). If this value is specified, `exp` must be specified as well in the `claims_to_verify` property. The default value of `0` represents an indefinite period. Potential clock skew should be considered when configuring this value. |
+| config.algorithm                       | no       | `RS256`           | The algorithm used to verify the token’s signature. Can be `HS256`, `HS384`, `HS512`, `RS256`, `RS384`, `RS512`.                                                                                                                                                                                                                                                                        |
+| config.allowed_iss                     | yes      |                   | A list of allowed issuers for this route/service/api.                                                                                                                                                                                                                                                                                                                                    |
+| config.allowed_aud                     | no       |                   | A list of allowed audiences for this route/service/api. If not specified, the audience will not be verified.                                                                                                                                                                                                                                      |
+| config.iss_key_grace_period            | no       | `10`              | An integer that sets the number of seconds until public keys for an issuer can be updated after writing new keys to the cache. This is a guard so that the Kong cache will not invalidate every time a token signed with an invalid public key is sent to the plugin.                                                                                                                    |
+| config.well_known_template             | no       | `%s/.well-known/openid-configuration` | A string template that the well known endpoint for keycloak is created from. String formatting is applied on the template and `%s` is replaced by the issuer of the token.                                                                                                                                                        |
+| config.keycloak_timeout                | no       | `30000`           | An integer representing the timeout (in milliseconds) for requests to Keycloak's .well-known and /certs endpoints.                                                                                                                                                                                                                               |
+| config.ssl_verify                      | no       | `yes`             | A string indicating whether to verify SSL certificates when connecting to Keycloak's .well-known and /certs endpoints. Can be `yes` or `no`.                                                                                                                                                                                                     |
+| config.discovery_cache_ttl             | no       | `300`             | An integer representing the time-to-live (in seconds) for caching Keycloak's discovery data (from the .well-known endpoint).                                                                                                                                                                                                                      |
+| config.scope                           | no       |                   | A list of scopes the token must have to access the api, i.e. `["email"]`. The token only has to have one of the listed scopes to be authorized.                                                                                                                                                                                                                                          |
+| config.roles                           | no       |                   | A list of roles of current client the token must have to access the api, i.e. `["uma_protection"]`. The token only has to have one of the listed roles to be authorized.                                                                                                                                                                                                                 |
+| config.realm_roles                     | no       |                   | A list of realm roles (`realm_access`) the token must have to access the api, i.e. `["offline_access"]`. The token only has to have one of the listed roles to be authorized.                                                                                                                                                                                                            |
+| config.client_roles                    | no       |                   | A list of roles of a different client (`resource_access`) the token must have to access the api, i.e. `["account:manage-account"]`. The format for each entry should be `<CLIENT_NAME>:<ROLE_NAME>`. The token only has to have one of the listed roles to be authorized.                                                                                                                |
+| config.consumer_match                  | no       | `false`           | A boolean value that indicates if the plugin should find a Kong consumer with `id`/`custom_id` that equals the `consumer_match_claim` claim in the access token.                                                                                                                                                                                                                         |
+| config.consumer_match_claim            | no       | `azp`             | The claim name in the token that the plugin will try to match the Kong `id`/`custom_id` against. For multi-realm deployments, consider configuring a Keycloak Protocol Mapper to inject a unique composite claim (e.g., "${iss}-${azp}") into the JWT, and use that claim here to ensure unique Kong Consumer mapping.                            |
+| config.consumer_match_claim_custom_id  | no       | `false`           | A boolean value that indicates if the plugin should match the `consumer_match_claim` claim against the consumers `id` or `custom_id`. By default it matches the consumer against the `id`.                                                                                                                                                                                               |
+| config.consumer_match_claim_username   | no       | `false`           | A boolean value that indicates if the plugin should match the `consumer_match_claim` claim against the consumer's username.                                                                                                                                                                                                                                                              |
+| config.consumer_match_ignore_not_found | no       | `false`           | A boolean value that indicates if the request should be let through regardless if the plugin is able to match the request to a Kong consumer or not.                                                                                                                                                                                                                                     |
+| config.internal_request_headers        | no       |                   | A list of additional header names that Kong will inspect for the presence of a JWT. If found, these JWTs will also be validated, and their claims can be extracted and passed upstream via Kong's proxy functionality (e.g., for X-Userinfo injected by other plugins).                                                                           |
+| config.redirect_after_authentication_failed_uri | no |                   | A URI to redirect to if authentication fails, instead of exiting the request with a Kong 4xx response.                                                                                                                                                                                                                                           |
 
 ### Example
-
-If you have not already, add the issuer for you tokens:
-
-```bash
-curl -X POST http://localhost:8001/jwt-keycloak \
-    -H "Accept: application/json" \
-    -H "Content-type: application/json" \
-    -d '{"iss":"http://localhost:8080/auth/realms/master","public_key":"MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAnBJCFPf4QJAul+Sn/GOnyojw83Z+nYusbC6XZUbrARbHCX6V5yjNDOQG9UBlSuMWuJZpbdmoQIdnrxHE3lPQKrKSrcQRilzuY294GN84C6EYBouWETksvO2zkzB/Zh3A8mQXbWrmrn/lkYNpA+6FCA8L3qgrojzg5d5j0Upv9qYocVoqowy7VkUHa+6pJscOmRI70AxvslkuX9zi0JFNj2i5Vj2J55OTIM/JhyoqZlFJjd3CEx/cuQzTBiIyyxUH0KTU3gnyoAhiJFPZ2Ovs5XjloMF5rBfXh2r4l937b+rQU/QMGI7IQ7I4t16CTnlSkfNkufZILLpZcECHRN5WjwIDAQAB"}'
-```
 
 Create service and add the plugin to it, and lastly create a route:
 
@@ -139,10 +165,10 @@ curl -X POST http://localhost:8001/services \
 
 curl -X POST http://localhost:8001/services/mockbin-echo/plugins \
     --data "name=jwt-keycloak" \
-    --data "config.allow_all_iss=true"
+    --data "config.allowed_iss=http://localhost:8080/auth/realms/master"
 
 curl -X POST http://localhost:8001/services/mockbin-echo/routes \
-    --data "paths=/" 
+    --data "paths=/"
 ```
 
 Then you can call the API:
@@ -164,42 +190,48 @@ export TOKENS=$(curl -s -X POST \
 -d "client_secret=${CLIENT_SECRET}" \
 http://localhost:8080/auth/realms/master/protocol/openid-connect/token)
 
-export TOKEN=$(echo ${TOKENS} | jq -r ".access_token")
-curl -H "Authorization: Bearer ${TOKEN}" http://localhost:8000/ \
-    --data "working=yeah"
+export ACCESS_TOKEN=$(echo ${TOKENS} | jq -r ".access_token")
+
+curl -H "Authorization: Bearer ${ACCESS_TOKEN}" http://localhost:8000/ \
+    --data "plugin=working"
 ```
 
-# Testing
+This should give you the response: `plugin=working`
+
+### Caveats
+
+To verify token issuers, this plugin needs to be able to access the `<ISSUER_REALM_URL>/.well-known/openid-configuration` and `<ISSUER_REALM_URL>/protocol/openid-connect/certs` endpoints of keycloak. If you are getting the error `{ "message": "Unable to get public key for issuer" }` it is probably because for some reason the plugin is unable to access these endpoints.
+
+## Testing
 
 Requires:
-* python
 * make
 * docker
 
-## Starting all the services
+**Because testing uses docker host networking it does not work on MacOS**
+
+### Setup before tests
 
 ```bash
 make keycloak-start
-make restart-all
 ```
 
-## Create test client
-
-Create a client in keycloak admin (master realm):
-* Standard flow: off
-* Implicit Flow: off
-* Direct Access Grants: off
-* Service Accounts: on
-* Authorization: on
-
-## Running tests
+### Running tests
 
 ```bash
-CLIENT_ID=<YOUR_CLIENT_ID> CLIENT_SECRET=<YOUR_CLIENT_SECRET> make test
+make test-unit # Unit tests
+make test-integration # Integration tests with postgres
+make test-integration KONG_DATABASE=cassandra # Integration tests with cassandra
+make test # All test with postgres
+make test KONG_DATABASE=cassandra # All test with cassandra
+make test-all # All test with cassandra and postgres and multiple versions of kong
 ```
 
-## Running tests with cassandra
+### Useful debug commands
 
 ```bash
-KONG_DATABASE=cassandra CLIENT_ID=<YOUR_CLIENT_ID> CLIENT_SECRET=<YOUR_CLIENT_SECRET> make test
+make kong-log # For proxy logs
+make kong-err-proxy # For proxy error logs
+make kong-err-admin # For admin error logs
+```
 ```

@@ -1,7 +1,22 @@
-ARG VERSION
-FROM kong:${VERSION}
+## Build plugin
+ARG KONG_VERSION
+FROM kong:${KONG_VERSION} as builder
 
-ENV LUA_PATH=/etc/?.lua;; \
-    KONG_PLUGINS=bundled,jwt-keycloak
+RUN apk --no-cache add zip
+WORKDIR /tmp
 
-COPY jwt-keycloak /etc/kong/plugins/jwt-keycloak
+COPY ./*.rockspec /tmp
+COPY ./LICENSE /tmp/LICENSE
+COPY ./src /tmp/src
+ARG PLUGIN_VERSION
+RUN luarocks make && luarocks pack kong-plugin-jwt-keycloak ${PLUGIN_VERSION}
+
+## Create Image
+FROM kong:${KONG_VERSION}
+
+ENV KONG_PLUGINS="bundled,jwt-keycloak"
+
+COPY --from=builder /tmp/*.rock /tmp/
+
+ARG PLUGIN_VERSION
+RUN luarocks install /tmp/kong-plugin-jwt-keycloak-${PLUGIN_VERSION}.all.rock && rm /tmp/*
