@@ -23,7 +23,7 @@ return {
               default = { "exp" },
               elements = { type = "string", one_of = { "exp", "nbf" } },
             }},
-          { anonymous = typedefs.uuid, default = nil },
+          { anonymous = { type = "string", uuid = true, required = false } },
           { run_on_preflight = { type = "boolean", default = true } },
           { maximum_expiration = {
               type = "number",
