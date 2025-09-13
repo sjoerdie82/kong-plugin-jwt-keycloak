@@ -1,22 +1,26 @@
-## Build plugin
-ARG KONG_VERSION
-FROM kong:${KONG_VERSION} as builder
+FROM kong/kong:3.9.1 AS plugin-builder
 
-RUN apk --no-cache add zip
-WORKDIR /tmp
+USER root
 
-COPY ./*.rockspec /tmp
-COPY ./LICENSE /tmp/LICENSE
-COPY ./src /tmp/src
-ARG PLUGIN_VERSION
-RUN luarocks make && luarocks pack kong-plugin-jwt-keycloak ${PLUGIN_VERSION}
+RUN apt-get update && \
+    apt-get install -y git curl unzip && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
 
-## Create Image
-FROM kong:${KONG_VERSION}
+# Install lua-resty-openidc (a dependency for jwt-keycloak plugin)
+RUN luarocks install lua-resty-openidc
+
+COPY . /tmp/kong-plugin-jwt-keycloak/
+RUN  cd /tmp/kong-plugin-jwt-keycloak && \
+     luarocks make
+
+FROM kong/kong:3.9.1
+
+USER root
 
 ENV KONG_PLUGINS="bundled,jwt-keycloak"
 
-COPY --from=builder /tmp/*.rock /tmp/
+COPY --from=plugin-builder /usr/local/share/lua/5.1/ /usr/local/share/lua/5.1/
+COPY --from=plugin-builder /usr/local/lib/luarocks/ /usr/local/lib/luarocks/
 
-ARG PLUGIN_VERSION
-RUN luarocks install /tmp/kong-plugin-jwt-keycloak-${PLUGIN_VERSION}.all.rock && rm /tmp/*
+USER kong

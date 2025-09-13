@@ -23,7 +23,7 @@ return {
               default = { "exp" },
               elements = { type = "string", one_of = { "exp", "nbf" } },
             }},
-          { anonymous = { type = "string", uuid = true, required = false } },
+          { anonymous = { type = "string", uuid = true, auto = false, default = ngx.null } },
           { run_on_preflight = { type = "boolean", default = true } },
           { maximum_expiration = {
               type = "number",
