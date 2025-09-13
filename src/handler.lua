@@ -204,7 +204,7 @@ local function validate_signature(conf, jwt)
         discovery = string.format(conf.well_known_template, jwt.claims.iss),
 
         timeout    = conf.keycloak_timeout or 30000,
-        ssl_verify = conf.ssl_verify ~= "no",
+        ssl_verify = conf.ssl_verify,
 
         -- Cache control – both discovery document and JWKS
         discovery_expires_in = conf.discovery_cache_ttl,
